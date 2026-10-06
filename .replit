@@ -1,0 +1,8 @@
+run = "bash start.sh"
+
+[nix]
+channel = "stable-23_11"
+
+[deployment]
+run = ["bash", "start.sh"]
+deploymentTarget = "gce"
