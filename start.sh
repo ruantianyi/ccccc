@@ -1,7 +1,9 @@
 #!/bin/bash
-# Academic Code Tester - Cloud Chromium via noVNC
+# Academic Code Tester - Cloud Chromium via noVNC + private fetch proxy
 # Single-session build (no Replit AI quota needed).
-# Launches Xvfb, fluxbox, x11vnc, Chromium, and websockify/noVNC.
+# Launches Xvfb, fluxbox, x11vnc, Chromium, then server.py which serves
+# ./public, relays WebSocket /websockify to VNC, and provides the private
+# /proxy endpoint (pages fetched server-side, rendered in your own browser).
 #
 # Replit conventions followed:
 # - Reads $PORT (set by Replit); defaults to 8080 for local runs.
@@ -75,12 +77,13 @@ if [ ! -f "$NOVNC_DIR/vnc.html" ]; then
 fi
 test -f "$NOVNC_DIR/core/rfb.js" || { echo "[ERROR] noVNC download failed"; exit 1; }
 
-echo "[start] Launching websockify on port ${PORT} (foreground)..."
+echo "[start] Launching server.py on port ${PORT} (foreground)..."
+echo "[start] server.py serves ./public, relays /websockify to VNC,"
+echo "[start] and exposes the private /proxy endpoint."
 echo "[start] Open the Replit webview to access the browser."
 echo "[start] WARNING: VNC has no password and the web UI has no sign-in."
-echo "[start] Anyone with the URL can control this Chromium session. Keep it private."
+echo "[start] Anyone with the URL can control this session. Keep it private."
 
-# Run websockify in the foreground so the Replit run command stays alive
-# exactly as long as the web server does. --web serves ./public
-# (our UI at / and noVNC files under /novnc/); /websockify proxies to VNC.
-exec websockify --web ./public "$PORT" "localhost:$VNC_PORT"
+# Run the server in the foreground so the Replit run command stays alive
+# exactly as long as the web server does.
+exec python3 server.py "$PORT"

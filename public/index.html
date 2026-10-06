@@ -34,8 +34,7 @@
     flex-wrap: wrap;
   }
   header h1 { margin: 0; font-size: 18px; }
-  header p { margin: 0; font-size: 13px; color: var(--muted); }
-  .controls { display: flex; gap: 8px; margin-left: auto; }
+  .controls { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
   /* Floating restore control, visible only while maximized (the maximized
      viewport covers the header, so the header button is unreachable). */
   #btn-restore {
@@ -56,12 +55,14 @@
   }
   button:hover { background: #eee; }
   button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
   #viewport-wrap {
     flex: 1;
     position: relative;
     background: #000;
     overflow: hidden;
   }
+  #viewport-wrap[hidden] { display: none; }
   /* Tab-fit maximize: fills the tab container, not browser fullscreen */
   #viewport-wrap.maximized {
     position: absolute;
@@ -72,6 +73,34 @@
   #viewport-wrap > div {
     width: 100%;
     height: 100%;
+  }
+  /* Proxy mode: pages render locally in this iframe */
+  #proxy-wrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  #proxy-wrap[hidden] { display: none; }
+  #proxy-bar {
+    display: flex;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  #proxy-url {
+    flex: 1;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+  }
+  #proxy-view {
+    flex: 1;
+    border: 0;
+    width: 100%;
+    background: #fff;
   }
   #status {
     padding: 8px 16px;
@@ -91,51 +120,69 @@
 </head>
 <body>
 <header>
-  <div>
-    <h1>Academic Code Tester</h1>
-    <p>Cloud Chromium desktop streamed via noVNC. This is a remote browser environment.</p>
-  </div>
+  <h1>Academic Code Tester</h1>
   <div class="controls">
     <button id="btn-connect" class="primary">Connect</button>
     <button id="btn-disconnect">Disconnect</button>
     <button id="btn-maximize">Maximize to tab</button>
+    <button id="btn-fullscreen">Fullscreen</button>
+    <button id="btn-mode">Proxy mode</button>
   </div>
 </header>
 <div class="warning">
-  Shared session: anyone with this URL can control the same Chromium. Keep the URL private.
-  Downloads from the remote browser are served via the remote session — your browser will prompt where to save.
-  Chrome Web Store extensions can be installed inside the remote Chromium.
+  Shared session: anyone with this URL controls the same remote browser. Keep the URL private.
 </div>
 <div id="viewport-wrap">
   <!-- noVNC appends its own screen div and canvas here; do NOT put a
        <canvas> in here yourself: canvas children are fallback content
        and never render, which would leave the viewport black. -->
 </div>
+<div id="proxy-wrap" hidden>
+  <div id="proxy-bar">
+    <input id="proxy-url" type="text" placeholder="https://example.com" spellcheck="false" autocomplete="off">
+    <button id="btn-go" class="primary">Go</button>
+  </div>
+  <!-- sandbox: scripts run with an opaque origin, so a proxied page can
+       never reach this parent page. -->
+  <iframe id="proxy-view" title="Proxied page"
+          sandbox="allow-scripts allow-forms allow-downloads allow-popups"></iframe>
+</div>
 <div id="status">Disconnected. Click Connect to start.</div>
 <button id="btn-restore" hidden>Restore</button>
 
 <script type="module">
   // noVNC client, vendored at ./public/novnc by start.sh (no CDN dependency).
-  // Expects websockify on the same host/port at path /websockify.
+  // Expects the server's WebSocket relay on the same host/port at /websockify.
   import RFB from './novnc/core/rfb.js';
 
-  const canvasWrap = document.getElementById('viewport-wrap');
+  // Per-start secret for /proxy, injected by server.py when serving this page.
+  const PROXY_TOKEN = "__PROXY_TOKEN__";
+
+  const viewportWrap = document.getElementById('viewport-wrap');
+  const proxyWrap = document.getElementById('proxy-wrap');
+  const proxyUrl = document.getElementById('proxy-url');
+  const proxyView = document.getElementById('proxy-view');
   const statusEl = document.getElementById('status');
+  const btnConnect = document.getElementById('btn-connect');
+  const btnDisconnect = document.getElementById('btn-disconnect');
+  const btnMaximize = document.getElementById('btn-maximize');
+  const btnFullscreen = document.getElementById('btn-fullscreen');
+  const btnMode = document.getElementById('btn-mode');
+  const btnRestore = document.getElementById('btn-restore');
   let rfb = null;
+  let proxyMode = false;
 
   function setStatus(msg) { statusEl.textContent = msg; }
 
+  // ---- VNC mode -------------------------------------------------------
   function connect() {
     if (rfb) { rfb.disconnect(); rfb = null; }
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-    // websockify default path; adjust if your setup uses a subpath
     const url = `${protocol}://${location.host}/websockify`;
-    // Fallback: try same port without path (websockify --web mode proxies ws at /)
-    // We try /websockify first, then root ws.
     setStatus('Connecting to ' + url + ' ...');
     try {
       // Pass the container div: RFB creates and manages its own canvas inside it.
-      rfb = new RFB(document.getElementById('viewport-wrap'), url, { credentials: {} });
+      rfb = new RFB(viewportWrap, url, { credentials: {} });
       rfb.addEventListener('connect', () => setStatus('Connected.'));
       rfb.addEventListener('disconnect', (e) => setStatus('Disconnected.' + (e.detail.clean ? '' : ' (unclean)')));
       rfb.addEventListener('credentialsrequired', () => setStatus('Credentials required (server is nopw, check proxy).'));
@@ -146,21 +193,62 @@
     }
   }
 
-  document.getElementById('btn-connect').onclick = connect;
-  document.getElementById('btn-disconnect').onclick = () => { if (rfb) rfb.disconnect(); };
+  btnConnect.onclick = connect;
+  btnDisconnect.onclick = () => { if (rfb) rfb.disconnect(); };
 
-  const btnMax = document.getElementById('btn-maximize');
-  const btnRestore = document.getElementById('btn-restore');
   function setMaximized(on) {
-    canvasWrap.classList.toggle('maximized', on);
+    viewportWrap.classList.toggle('maximized', on);
     btnRestore.hidden = !on;
-    btnMax.textContent = on ? 'Restore' : 'Maximize to tab';
+    btnMaximize.textContent = on ? 'Restore' : 'Maximize to tab';
     if (rfb) { rfb.scaleViewport = true; }
-    // Trigger reflow so the canvas rescales to the new container size
     window.dispatchEvent(new Event('resize'));
   }
-  btnMax.onclick = () => setMaximized(!canvasWrap.classList.contains('maximized'));
+  btnMaximize.onclick = () => setMaximized(!viewportWrap.classList.contains('maximized'));
   btnRestore.onclick = () => setMaximized(false);
+
+  // ---- Fullscreen (real browser fullscreen, like video streaming) -----
+  btnFullscreen.onclick = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      const el = proxyMode ? proxyWrap : viewportWrap;
+      el.requestFullscreen().catch((err) => setStatus('Fullscreen failed: ' + err.message));
+    }
+  };
+  document.addEventListener('fullscreenchange', () => {
+    btnFullscreen.textContent = document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen';
+  });
+
+  // ---- Mode switch: VNC pixels vs locally-rendered proxy --------------
+  function setMode(proxy) {
+    proxyMode = proxy;
+    setMaximized(false);
+    viewportWrap.hidden = proxy;
+    proxyWrap.hidden = !proxy;
+    btnMode.textContent = proxy ? 'VNC mode' : 'Proxy mode';
+    btnMode.classList.toggle('active', proxy);
+    for (const b of [btnConnect, btnDisconnect, btnMaximize]) {
+      b.style.display = proxy ? 'none' : '';
+    }
+    setStatus(proxy
+      ? 'Proxy mode: pages are fetched through the cloud server but rendered locally in your browser. Downloads go to your computer.'
+      : 'Disconnected. Click Connect to start.');
+  }
+  btnMode.onclick = () => setMode(!proxyMode);
+
+  // ---- Proxy navigation ------------------------------------------------
+  function proxyGo() {
+    let u = proxyUrl.value.trim();
+    if (!u) return;
+    if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+    proxyView.src = '/proxy?url=' + encodeURIComponent(u) + '&token=' + encodeURIComponent(PROXY_TOKEN);
+    setStatus('Loading proxied page...');
+  }
+  document.getElementById('btn-go').onclick = proxyGo;
+  proxyUrl.addEventListener('keydown', (e) => { if (e.key === 'Enter') proxyGo(); });
+  proxyView.addEventListener('load', () => {
+    if (proxyMode) setStatus('Proxied page loaded (rendered locally).');
+  });
 
   // Auto-connect on load
   // connect();

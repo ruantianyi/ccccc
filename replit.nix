@@ -4,6 +4,6 @@
     pkgs.xorg.xvfb
     pkgs.x11vnc
     pkgs.fluxbox
-    pkgs.python3Packages.websockify
+    pkgs.python3
   ];
 }
