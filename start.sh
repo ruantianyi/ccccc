@@ -42,6 +42,10 @@ x11vnc -display :1 -nopw -listen localhost -rfbport "$VNC_PORT" -forever -shared
 sleep 2
 
 echo "[start] Preparing Chromium profile..."
+# Wipe the profile's Default dir each run: a stale Singleton lock or
+# corrupted profile state can leave Chromium running without ever
+# mapping a window (observed: healthy Sl processes, no X window).
+rm -rf "${PROFILE_DIR:?PROFILE_DIR unset}/Default"
 mkdir -p "$PROFILE_DIR/Default" "$DOWNLOAD_DIR"
 # Preseed the download location; Chromium reads this on first run.
 # Files downloaded in the remote browser land here on the server,
@@ -56,15 +60,14 @@ cat > "$PROFILE_DIR/Default/Preferences" <<EOF
 }
 EOF
 
-echo "[start] Starting Chromium on :1..."
+echo "[start] Starting Chromium on :1 (kiosk: fills the 1280x720 display exactly)..."
 DISPLAY=:1 chromium \
   --no-sandbox \
   --disable-gpu \
   --disable-dev-shm-usage \
   --no-first-run \
   --no-default-browser-check \
-  --window-size=1280,720 \
-  --window-position=0,0 \
+  --kiosk \
   --user-data-dir="$PROFILE_DIR" \
   about:blank &
 sleep 3
