@@ -1,0 +1,15 @@
+{
+  "dependencies": {
+    "@mercuryworkshop/bare-mux": "^2.1.9",
+    "@mercuryworkshop/libcurl-transport": "^1.5.2",
+    "@mercuryworkshop/scramjet": "1.1.0",
+    "@mercuryworkshop/wisp-js": "^0.4.1",
+    "@mercuryworkshop/epoxy-transport": "2.1.28"
+  },
+  "description": "Scramjet service-worker proxy backend for Academic Code Tester. Localhost only; the Python front door enforces the per-start token.",
+  "license": "AGPL-3.0-only",
+  "name": "academic-code-tester-sj",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0"
+}
