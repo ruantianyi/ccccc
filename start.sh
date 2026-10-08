@@ -60,14 +60,16 @@ cat > "$PROFILE_DIR/Default/Preferences" <<EOF
 }
 EOF
 
-echo "[start] Starting Chromium on :1 (kiosk: fills the 1280x720 display exactly)..."
+echo "[start] Starting Chromium on :1 (windowed 1280x720 at 0,0: address bar and tabs visible, exact fit)..."
 DISPLAY=:1 chromium \
   --no-sandbox \
   --disable-gpu \
   --disable-dev-shm-usage \
   --no-first-run \
   --no-default-browser-check \
-  --kiosk \
+  --window-size=1280,720 \
+  --window-position=0,0 \
+  --force-device-scale-factor=1 \
   --user-data-dir="$PROFILE_DIR" \
   https://www.google.com &
 sleep 3
