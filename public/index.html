@@ -35,8 +35,6 @@
   }
   header h1 { margin: 0; font-size: 18px; }
   .controls { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
-  /* Floating restore control, visible only while maximized (the maximized
-     viewport covers the header, so the header button is unreachable). */
   #btn-restore {
     position: fixed;
     top: 12px;
@@ -63,18 +61,15 @@
     overflow: hidden;
   }
   #viewport-wrap[hidden] { display: none; }
-  /* Tab-fit maximize: fills the tab container, not browser fullscreen */
   #viewport-wrap.maximized {
     position: absolute;
     top: 0; left: 0; right: 0; bottom: 0;
     z-index: 10;
   }
-  /* noVNC appends its own screen div + canvas inside the container */
   #viewport-wrap > div {
     width: 100%;
     height: 100%;
   }
-  /* Proxy mode: pages render locally in this iframe */
   #proxy-wrap {
     flex: 1;
     display: flex;
@@ -89,6 +84,15 @@
     background: var(--surface);
     border-bottom: 1px solid var(--border);
   }
+  #proxy-bar[hidden] { display: none; }
+  #btn-show-bar {
+    position: fixed;
+    top: 8px;
+    right: 8px;
+    z-index: 30;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+  }
+  #btn-show-bar[hidden] { display: none; }
   #proxy-url {
     flex: 1;
     padding: 8px 10px;
@@ -123,19 +127,14 @@
   </div>
 </header>
 <div id="viewport-wrap">
-  <!-- noVNC appends its own screen div and canvas here; do NOT put a
-       <canvas> in here yourself: canvas children are fallback content
-       and never render, which would leave the viewport black. -->
 </div>
 <div id="proxy-wrap" hidden>
   <div id="proxy-bar">
     <input id="proxy-url" type="text" placeholder="https://example.com" spellcheck="false" autocomplete="off">
     <button id="btn-go" class="primary">Go</button>
+    <button id="btn-hide-bar" title="Hide address bar">▲</button>
   </div>
-  <!-- sandbox: allow-same-origin is REQUIRED for the Service Worker to
-       intercept the iframe's navigations (opaque-origin frames are not
-       intercepted). The proxied page is rewritten/sandboxed by Scramjet;
-       the app URL itself stays private per the shared-session warning. -->
+  <button id="btn-show-bar" hidden title="Show address bar">▼</button>
   <iframe id="proxy-view" title="Proxied page"
           sandbox="allow-scripts allow-forms allow-downloads allow-popups allow-same-origin"></iframe>
 </div>
@@ -143,15 +142,11 @@
 <button id="btn-restore" hidden>Restore</button>
 
 <script type="module">
-  // noVNC client, vendored at ./public/novnc by start.sh (no CDN dependency).
-  // Expects the server's WebSocket relay on the same host/port at /websockify.
   import RFB from './novnc/core/rfb.js';
-
-  // Per-start secret for /proxy, injected by server.py when serving this page.
   const PROXY_TOKEN = "__PROXY_TOKEN__";
-
   const viewportWrap = document.getElementById('viewport-wrap');
   const proxyWrap = document.getElementById('proxy-wrap');
+  const proxyBar = document.getElementById('proxy-bar');
   const proxyUrl = document.getElementById('proxy-url');
   const proxyView = document.getElementById('proxy-view');
   const statusEl = document.getElementById('status');
@@ -163,17 +158,13 @@
   const btnRestore = document.getElementById('btn-restore');
   let rfb = null;
   let proxyMode = false;
-
   function setStatus(msg) { statusEl.textContent = msg; }
-
-  // ---- VNC mode -------------------------------------------------------
   function connect() {
     if (rfb) { rfb.disconnect(); rfb = null; }
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
     const url = `${protocol}://${location.host}/websockify`;
     setStatus('Connecting to ' + url + ' ...');
     try {
-      // Pass the container div: RFB creates and manages its own canvas inside it.
       rfb = new RFB(viewportWrap, url, { credentials: {} });
       rfb.addEventListener('connect', () => setStatus('Connected.'));
       rfb.addEventListener('disconnect', (e) => setStatus('Disconnected.' + (e.detail.clean ? '' : ' (unclean)')));
@@ -184,10 +175,8 @@
       setStatus('Failed to connect: ' + err.message);
     }
   }
-
   btnConnect.onclick = connect;
   btnDisconnect.onclick = () => { if (rfb) rfb.disconnect(); };
-
   function setMaximized(on) {
     viewportWrap.classList.toggle('maximized', on);
     btnRestore.hidden = !on;
@@ -197,8 +186,6 @@
   }
   btnMaximize.onclick = () => setMaximized(!viewportWrap.classList.contains('maximized'));
   btnRestore.onclick = () => setMaximized(false);
-
-  // ---- Fullscreen (real browser fullscreen, like video streaming) -----
   btnFullscreen.onclick = () => {
     if (document.fullscreenElement) {
       document.exitFullscreen();
@@ -210,8 +197,6 @@
   document.addEventListener('fullscreenchange', () => {
     btnFullscreen.textContent = document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen';
   });
-
-  // ---- Mode switch: VNC pixels vs locally-rendered proxy --------------
   function setMode(proxy) {
     proxyMode = proxy;
     setMaximized(false);
@@ -227,13 +212,6 @@
       : 'Disconnected. Click Connect to start.');
   }
   btnMode.onclick = () => setMode(!proxyMode);
-
-  // ---- Proxy navigation (Scramjet service-worker mode) ------------------
-  // The cloud Node backend serves Scramjet under /sj/<token>/. index.html
-  // (top level, real origin) registers the Service Worker; the SW then
-  // intercepts the sandboxed iframe's requests and tunnels them through
-  // Wisp. HTML/JS/CSS are rewritten in the browser (AST-level), so SPAs,
-  // embeds, WebSockets and live connections work.
   function loadScript(src) {
     return new Promise((resolve, reject) => {
       const s = document.createElement('script');
@@ -243,7 +221,6 @@
       document.head.appendChild(s);
     });
   }
-
   let sjInit = null;
   function ensureScramjet() {
     if (sjInit) return sjInit;
@@ -264,15 +241,12 @@
       if (!navigator.serviceWorker) {
         throw new Error('this browser does not support service workers');
       }
-      // Drop SW registrations from previous starts (the token changed).
       const regs = await navigator.serviceWorker.getRegistrations();
       await Promise.all(regs
         .filter((r) => !r.scope.includes(PROXY_TOKEN))
         .map((r) => r.unregister()));
       const reg = await navigator.serviceWorker.register(base + '/sw.js',
                                                          { scope: base + '/' });
-      // Wait until the worker is activated: navigations issued before that
-      // would bypass the SW and hit the network (404 on encoded URLs).
       const worker = reg.installing || reg.waiting || reg.active;
       if (worker && worker.state !== 'activated') {
         await new Promise((resolve, reject) => {
@@ -306,13 +280,11 @@
     })();
     return sjInit;
   }
-
   function classicProxyGo(u) {
     proxyView.src = '/proxy?url=' + encodeURIComponent(u) +
       '&token=' + encodeURIComponent(PROXY_TOKEN);
     setStatus('Proxied page loaded (classic fallback, rendered locally).');
   }
-
   async function proxyGo() {
     let u = proxyUrl.value.trim();
     if (!u) return;
@@ -331,12 +303,19 @@
   }
   document.getElementById('btn-go').onclick = proxyGo;
   proxyUrl.addEventListener('keydown', (e) => { if (e.key === 'Enter') proxyGo(); });
+  const btnHideBar = document.getElementById('btn-hide-bar');
+  const btnShowBar = document.getElementById('btn-show-bar');
+  btnHideBar.onclick = () => {
+    proxyBar.hidden = true;
+    btnShowBar.hidden = false;
+  };
+  btnShowBar.onclick = () => {
+    proxyBar.hidden = false;
+    btnShowBar.hidden = true;
+  };
   proxyView.addEventListener('load', () => {
     if (proxyMode) setStatus('Proxied page loaded (rendered locally).');
   });
-
-  // Auto-connect on load
-  // connect();
 </script>
 </body>
 </html>
