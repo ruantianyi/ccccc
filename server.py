@@ -35,6 +35,7 @@ are kept in a single server-side jar (single-user design).
 """
 import base64
 import hashlib
+import http.client
 import http.cookiejar
 import http.server
 import json
@@ -50,6 +51,7 @@ import urllib.request
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get("PORT", "8080"))
 VNC_HOST, VNC_PORT = "127.0.0.1", 5901
+SJ_HOST, SJ_PORT = "127.0.0.1", int(os.environ.get("SJ_PORT", "18091"))
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PUBLIC_DIR = os.path.join(ROOT, "public")
 PROXY_TOKEN = secrets.token_hex(16)
@@ -254,6 +256,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.relay_websocket_proxy(parsed)
             else:
                 self.send_error(400, "WebSocket upgrade required")
+        elif parsed.path == "/sj" or parsed.path.startswith("/sj/"):
+            self.serve_sj(parsed)
         elif parsed.path in ("/", "/index.html"):
             self.serve_index()
         else:
@@ -587,12 +591,118 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    # -- Scramjet backend (service-worker proxy mode) ------------------------
+    # /sj/<token>/* is reverse-proxied to the local Node Scramjet backend.
+    # The token is checked here in Python; Node trusts localhost.
+    def serve_sj(self, parsed):
+        rest = parsed.path[3:]  # strip "/sj"
+        if not rest.startswith("/"):
+            self.send_error(404, "Not found")
+            return
+        seg = rest[1:].split("/", 1)
+        if not secrets.compare_digest(seg[0], PROXY_TOKEN):
+            self.send_error(403, "Forbidden: bad proxy token")
+            return
+        node_path = "/" + seg[1] if len(seg) > 1 else "/"
+        if parsed.query:
+            node_path += "?" + parsed.query
+        if self.headers.get("Upgrade", "").lower() == "websocket":
+            self.relay_sj_upgrade(node_path)
+        else:
+            self.forward_sj_http(node_path)
+
+    def forward_sj_http(self, node_path):
+        try:
+            conn = http.client.HTTPConnection(SJ_HOST, SJ_PORT, timeout=25)
+            headers = {}
+            for k, v in self.headers.items():
+                kl = k.lower()
+                if kl in ("host", "connection", "upgrade", "proxy-connection",
+                          "keep-alive", "transfer-encoding"):
+                    continue
+                headers[k] = v
+            conn.request("GET", node_path, headers=headers)
+            resp = conn.getresponse()
+            body = resp.read()
+        except Exception as e:
+            self.send_error(502, "sj backend unreachable: %s" % e)
+            return
+        self.send_response(resp.status)
+        for k, v in resp.getheaders():
+            if k.lower() in ("transfer-encoding", "connection",
+                             "keep-alive"):
+                continue
+            self.send_header(k, v)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except OSError:
+            pass
+
+    def relay_sj_upgrade(self, node_path):
+        # Raw TCP pipe for the Wisp WebSocket: forward the HTTP upgrade
+        # request verbatim (rewritten path), then shuttle bytes both ways.
+        try:
+            upstream = socket.create_connection((SJ_HOST, SJ_PORT),
+                                                timeout=10)
+        except OSError:
+            self.send_error(502, "sj backend unreachable")
+            return
+        lines = ["GET %s HTTP/1.1" % node_path]
+        for k, v in self.headers.items():
+            kl = k.lower()
+            if kl == "host":
+                lines.append("Host: %s:%d" % (SJ_HOST, SJ_PORT))
+            elif kl not in ("proxy-connection", "keep-alive"):
+                lines.append("%s: %s" % (k, v))
+        try:
+            upstream.sendall(("\r\n".join(lines) + "\r\n\r\n")
+                             .encode("latin1"))
+            resp = b""
+            while b"\r\n\r\n" not in resp:
+                chunk = upstream.recv(4096)
+                if not chunk:
+                    raise OSError("sj closed during handshake")
+                resp += chunk
+                if len(resp) > 16384:
+                    raise OSError("handshake too large")
+            self.connection.sendall(resp)
+            self.pump_raw(self.connection, upstream)
+        except OSError:
+            pass
+        finally:
+            try:
+                upstream.close()
+            except OSError:
+                pass
+
+    def pump_raw(self, a, b):
+        while True:
+            r, _, _ = select.select([a, b], [], [], 60)
+            for src, dst in ((a, b), (b, a)):
+                if src in r:
+                    try:
+                        chunk = src.recv(65536)
+                    except OSError:
+                        return
+                    if not chunk:
+                        return
+                    try:
+                        dst.sendall(chunk)
+                    except OSError:
+                        return
+
 
 def main():
     server = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     server.daemon_threads = True
     print("[server] Academic Code Tester on :%d (proxy token %s...)"
           % (PORT, PROXY_TOKEN[:8]))
+    dump = os.environ.get("TOKEN_DUMP_PATH")
+    if dump:
+        with open(dump, "w") as f:
+            f.write(PROXY_TOKEN)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -5,5 +5,6 @@
     pkgs.x11vnc
     pkgs.fluxbox
     pkgs.python3
+    pkgs.nodejs
   ];
 }

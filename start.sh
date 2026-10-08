@@ -69,7 +69,7 @@ DISPLAY=:1 chromium \
   --no-default-browser-check \
   --kiosk \
   --user-data-dir="$PROFILE_DIR" \
-  about:blank &
+  https://www.google.com &
 sleep 3
 
 echo "[start] Fetching noVNC client files (cached on disk after first run)..."
@@ -80,9 +80,24 @@ if [ ! -f "$NOVNC_DIR/vnc.html" ]; then
 fi
 test -f "$NOVNC_DIR/core/rfb.js" || { echo "[ERROR] noVNC download failed"; exit 1; }
 
+echo "[start] Installing Scramjet proxy backend deps (cached in sj/node_modules)..."
+if [ ! -d "sj/node_modules" ]; then
+  (cd sj && npm install --no-audit --no-fund)
+fi
+test -f "sj/node_modules/@mercuryworkshop/scramjet/dist/scramjet.all.js" \
+  || { echo "[ERROR] scramjet npm install failed"; exit 1; }
+
+echo "[start] Starting Scramjet backend (Node, localhost only)..."
+export SJ_PORT=18091
+node sj/sj-server.js &
+SJ_PID=$!
+sleep 2
+kill -0 "$SJ_PID" 2>/dev/null || { echo "[ERROR] sj-server.js exited"; exit 1; }
+
 echo "[start] Launching server.py on port ${PORT} (foreground)..."
 echo "[start] server.py serves ./public, relays /websockify to VNC,"
-echo "[start] and exposes the private /proxy endpoint."
+echo "[start] exposes the private /proxy endpoint, and reverse-proxies"
+echo "[start] /sj/<token>/* to the Scramjet backend (service-worker mode)."
 echo "[start] Open the Replit webview to access the browser."
 echo "[start] WARNING: VNC has no password and the web UI has no sign-in."
 echo "[start] Anyone with the URL can control this session. Keep it private."
