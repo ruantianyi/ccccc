@@ -109,13 +109,6 @@
     border-top: 1px solid var(--border);
     background: var(--surface);
   }
-  .warning {
-    padding: 8px 16px;
-    font-size: 12px;
-    background: #fffbeb;
-    border-bottom: 1px solid #fde68a;
-    color: #92400e;
-  }
 </style>
 </head>
 <body>
@@ -129,9 +122,6 @@
     <button id="btn-mode">Proxy mode</button>
   </div>
 </header>
-<div class="warning">
-  Shared session: anyone with this URL controls the same remote browser. Keep the URL private.
-</div>
 <div id="viewport-wrap">
   <!-- noVNC appends its own screen div and canvas here; do NOT put a
        <canvas> in here yourself: canvas children are fallback content
@@ -142,10 +132,12 @@
     <input id="proxy-url" type="text" placeholder="https://example.com" spellcheck="false" autocomplete="off">
     <button id="btn-go" class="primary">Go</button>
   </div>
-  <!-- sandbox: scripts run with an opaque origin, so a proxied page can
-       never reach this parent page. -->
+  <!-- sandbox: allow-same-origin is REQUIRED for the Service Worker to
+       intercept the iframe's navigations (opaque-origin frames are not
+       intercepted). The proxied page is rewritten/sandboxed by Scramjet;
+       the app URL itself stays private per the shared-session warning. -->
   <iframe id="proxy-view" title="Proxied page"
-          sandbox="allow-scripts allow-forms allow-downloads allow-popups"></iframe>
+          sandbox="allow-scripts allow-forms allow-downloads allow-popups allow-same-origin"></iframe>
 </div>
 <div id="status">Disconnected. Click Connect to start.</div>
 <button id="btn-restore" hidden>Restore</button>
@@ -236,13 +228,106 @@
   }
   btnMode.onclick = () => setMode(!proxyMode);
 
-  // ---- Proxy navigation ------------------------------------------------
-  function proxyGo() {
+  // ---- Proxy navigation (Scramjet service-worker mode) ------------------
+  // The cloud Node backend serves Scramjet under /sj/<token>/. index.html
+  // (top level, real origin) registers the Service Worker; the SW then
+  // intercepts the sandboxed iframe's requests and tunnels them through
+  // Wisp. HTML/JS/CSS are rewritten in the browser (AST-level), so SPAs,
+  // embeds, WebSockets and live connections work.
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = () => reject(new Error('failed to load ' + src));
+      document.head.appendChild(s);
+    });
+  }
+
+  let sjInit = null;
+  function ensureScramjet() {
+    if (sjInit) return sjInit;
+    sjInit = (async () => {
+      const base = '/sj/' + encodeURIComponent(PROXY_TOKEN);
+      await loadScript(base + '/scram/scramjet.all.js');
+      await loadScript(base + '/baremux/index.js');
+      const { ScramjetController } = $scramjetLoadController();
+      const scramjet = new ScramjetController({
+        prefix: base + '/',
+        files: {
+          wasm: base + '/scram/scramjet.wasm.wasm',
+          all: base + '/scram/scramjet.all.js',
+          sync: base + '/scram/scramjet.sync.js',
+        },
+      });
+      await scramjet.init();
+      if (!navigator.serviceWorker) {
+        throw new Error('this browser does not support service workers');
+      }
+      // Drop SW registrations from previous starts (the token changed).
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs
+        .filter((r) => !r.scope.includes(PROXY_TOKEN))
+        .map((r) => r.unregister()));
+      const reg = await navigator.serviceWorker.register(base + '/sw.js',
+                                                         { scope: base + '/' });
+      // Wait until the worker is activated: navigations issued before that
+      // would bypass the SW and hit the network (404 on encoded URLs).
+      const worker = reg.installing || reg.waiting || reg.active;
+      if (worker && worker.state !== 'activated') {
+        await new Promise((resolve, reject) => {
+          const to = setTimeout(
+            () => reject(new Error('service worker activation timed out')),
+            20000);
+          worker.addEventListener('statechange', () => {
+            if (worker.state === 'activated') {
+              clearTimeout(to);
+              resolve();
+            } else if (worker.state === 'redundant') {
+              clearTimeout(to);
+              reject(new Error('service worker became redundant'));
+            }
+          });
+        });
+      }
+      const connection = new BareMux.BareMuxConnection(
+        base + '/baremux/worker.js');
+      const wispUrl = (location.protocol === 'https:' ? 'wss' : 'ws') +
+        '://' + location.host + base + '/wisp/';
+      if ((await connection.getTransport()) !== base + '/epoxy/index.mjs') {
+        await connection.setTransport(base + '/epoxy/index.mjs',
+                                      [{ wisp: wispUrl }]);
+      }
+      const frame = scramjet.createFrame(proxyView);
+      frame.addEventListener('urlchange', (e) => {
+        if (e && e.url) proxyUrl.value = e.url;
+      });
+      return frame;
+    })();
+    return sjInit;
+  }
+
+  function classicProxyGo(u) {
+    proxyView.src = '/proxy?url=' + encodeURIComponent(u) +
+      '&token=' + encodeURIComponent(PROXY_TOKEN);
+    setStatus('Proxied page loaded (classic fallback, rendered locally).');
+  }
+
+  async function proxyGo() {
     let u = proxyUrl.value.trim();
     if (!u) return;
     if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
-    proxyView.src = '/proxy?url=' + encodeURIComponent(u) + '&token=' + encodeURIComponent(PROXY_TOKEN);
-    setStatus('Loading proxied page...');
+    setStatus('Starting proxy...');
+    try {
+      const frame = await ensureScramjet();
+      setStatus('Loading proxied page...');
+      frame.go(u);
+    } catch (err) {
+      setStatus('Proxy init failed (' + err.message +
+                '), falling back to classic proxy.');
+      sjInit = null;
+      classicProxyGo(u);
+    }
   }
   document.getElementById('btn-go').onclick = proxyGo;
   proxyUrl.addEventListener('keydown', (e) => { if (e.key === 'Enter') proxyGo(); });
