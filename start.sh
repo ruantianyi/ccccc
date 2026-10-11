@@ -13,7 +13,7 @@
 set -e
 
 export DISPLAY=:1
-RES="1280x720x24"
+RES="1920x1080x24"
 PORT="${PORT:-8080}"
 VNC_PORT=5901
 PROFILE_DIR="/home/runner/chrome-profile"
@@ -33,9 +33,9 @@ echo "[start] Starting Xvfb on :1 (${RES})..."
 Xvfb :1 -screen 0 "$RES" &
 sleep 2
 
-echo "[start] Removing fluxbox decorations for Chromium (exact 1280x720 fit)..."
+echo "[start] Removing fluxbox decorations for Chromium (exact 1920x1080 fit)..."
 # fluxbox otherwise adds a ~20px titlebar on top of the Chromium window, so the
-# framed window no longer fits the 1280x720 viewport exactly: the titlebar eats
+# framed window no longer fits the 1920x1080 viewport exactly: the titlebar eats
 # the top of the screen and the window's bottom is pushed offscreen (observed:
 # tabs bar cut off). The apps file is read by fluxbox at startup, so write it
 # before launching fluxbox. The pattern is a regex matched against WM_CLASS.
@@ -53,7 +53,7 @@ DISPLAY=:1 fluxbox &
 sleep 2
 
 echo "[start] Starting x11vnc (localhost only, no password; max frame-rate tuning)..."
-# Max frame-rate tuning (resolution stays 1280x720): poll the framebuffer
+# Max frame-rate tuning (resolution stays 1920x1080): poll the framebuffer
 # every 5ms (default 20), ship updates after 5ms (default 20), and never
 # take long idle naps between polls. Flags verified against x11vnc 0.9.17 manual.
 x11vnc -display :1 -nopw -listen localhost -rfbport "$VNC_PORT" -forever -shared \
@@ -79,14 +79,14 @@ cat > "$PROFILE_DIR/Default/Preferences" <<EOF
 }
 EOF
 
-echo "[start] Starting Chromium on :1 (windowed 1280x720 at 0,0: address bar and tabs visible, exact fit)..."
+echo "[start] Starting Chromium on :1 (windowed 1920x1080 at 0,0: address bar and tabs visible, exact fit)..."
 DISPLAY=:1 chromium \
   --no-sandbox \
   --disable-gpu \
   --disable-dev-shm-usage \
   --no-first-run \
   --no-default-browser-check \
-  --window-size=1280,720 \
+  --window-size=1920,1080 \
   --window-position=0,0 \
   --force-device-scale-factor=1 \
   --user-data-dir="$PROFILE_DIR" \
