@@ -33,12 +33,31 @@ echo "[start] Starting Xvfb on :1 (${RES})..."
 Xvfb :1 -screen 0 "$RES" &
 sleep 2
 
+echo "[start] Removing fluxbox decorations for Chromium (exact 1280x720 fit)..."
+# fluxbox otherwise adds a ~20px titlebar on top of the Chromium window, so the
+# framed window no longer fits the 1280x720 viewport exactly: the titlebar eats
+# the top of the screen and the window's bottom is pushed offscreen (observed:
+# tabs bar cut off). The apps file is read by fluxbox at startup, so write it
+# before launching fluxbox. The pattern is a regex matched against WM_CLASS.
+mkdir -p ~/.fluxbox
+if ! grep -q "^\[app\] (name=\[Cc\]hrom)" ~/.fluxbox/apps 2>/dev/null; then
+  cat >> ~/.fluxbox/apps <<'EOF'
+[app] (name=[Cc]hrom)
+  [Deco] {NONE}
+[end]
+EOF
+fi
+
 echo "[start] Starting fluxbox window manager..."
 DISPLAY=:1 fluxbox &
 sleep 2
 
-echo "[start] Starting x11vnc (localhost only, no password)..."
-x11vnc -display :1 -nopw -listen localhost -rfbport "$VNC_PORT" -forever -shared &
+echo "[start] Starting x11vnc (localhost only, no password; max frame-rate tuning)..."
+# Max frame-rate tuning (resolution stays 1280x720): poll the framebuffer
+# every 5ms (default 20), ship updates after 5ms (default 20), and never
+# take long idle naps between polls. Flags verified against x11vnc 0.9.17 manual.
+x11vnc -display :1 -nopw -listen localhost -rfbport "$VNC_PORT" -forever -shared \
+  -wait 5 -defer 5 -nonap &
 sleep 2
 
 echo "[start] Preparing Chromium profile..."
