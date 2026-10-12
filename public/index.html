@@ -119,7 +119,8 @@
 <header>
   <h1>Academic Code Tester</h1>
   <div class="controls">
-    <button id="btn-connect" class="primary">Connect</button>
+    <button id="btn-connect1" class="primary">Connect to Machine 1</button>
+    <button id="btn-connect2" class="primary">Connect to Machine 2 &#128274;</button>
     <button id="btn-disconnect">Disconnect</button>
     <button id="btn-maximize">Maximize to tab</button>
     <button id="btn-fullscreen">Fullscreen</button>
@@ -138,7 +139,7 @@
   <iframe id="proxy-view" title="Proxied page"
           sandbox="allow-scripts allow-forms allow-downloads allow-popups allow-same-origin"></iframe>
 </div>
-<div id="status">Disconnected. Click Connect to start.</div>
+<div id="status">Disconnected. Connect to machine 1 or 2 to start.</div>
 <button id="btn-restore" hidden>Restore</button>
 
 <script type="module">
@@ -150,7 +151,8 @@
   const proxyUrl = document.getElementById('proxy-url');
   const proxyView = document.getElementById('proxy-view');
   const statusEl = document.getElementById('status');
-  const btnConnect = document.getElementById('btn-connect');
+  const btnConnect1 = document.getElementById('btn-connect1');
+  const btnConnect2 = document.getElementById('btn-connect2');
   const btnDisconnect = document.getElementById('btn-disconnect');
   const btnMaximize = document.getElementById('btn-maximize');
   const btnFullscreen = document.getElementById('btn-fullscreen');
@@ -159,13 +161,20 @@
   let rfb = null;
   let proxyMode = false;
   function setStatus(msg) { statusEl.textContent = msg; }
-  function connect() {
+  function connect(machine) {
     if (rfb) { rfb.disconnect(); rfb = null; }
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${protocol}://${location.host}/websockify`;
-    setStatus('Connecting to ' + url + ' ...');
+    const path = machine === 2 ? '/websockify2' : '/websockify';
+    const url = `${protocol}://${location.host}${path}`;
+    const credentials = {};
+    if (machine === 2) {
+      const pw = prompt('Enter the password for Machine 2:');
+      if (pw === null) { setStatus('Disconnected. Connect to machine 1 or 2 to start.'); return; }
+      credentials.password = pw;
+    }
+    setStatus('Connecting to machine ' + machine + ' ...');
     try {
-      rfb = new RFB(viewportWrap, url, { credentials: {} });
+      rfb = new RFB(viewportWrap, url, { credentials });
       rfb.addEventListener('connect', () => setStatus('Connected.'));
       rfb.addEventListener('disconnect', (e) => setStatus('Disconnected.' + (e.detail.clean ? '' : ' (unclean)')));
       rfb.addEventListener('credentialsrequired', () => setStatus('Credentials required (server is nopw, check proxy).'));
@@ -175,7 +184,8 @@
       setStatus('Failed to connect: ' + err.message);
     }
   }
-  btnConnect.onclick = connect;
+  btnConnect1.onclick = () => connect(1);
+  btnConnect2.onclick = () => connect(2);
   btnDisconnect.onclick = () => { if (rfb) rfb.disconnect(); };
   function setMaximized(on) {
     viewportWrap.classList.toggle('maximized', on);
@@ -204,12 +214,12 @@
     proxyWrap.hidden = !proxy;
     btnMode.textContent = proxy ? 'VNC mode' : 'Proxy mode';
     btnMode.classList.toggle('active', proxy);
-    for (const b of [btnConnect, btnDisconnect, btnMaximize]) {
+    for (const b of [btnConnect1, btnConnect2, btnDisconnect, btnMaximize]) {
       b.style.display = proxy ? 'none' : '';
     }
     setStatus(proxy
       ? 'Proxy mode: pages are fetched through the cloud server but rendered locally in your browser. Downloads go to your computer.'
-      : 'Disconnected. Click Connect to start.');
+      : 'Disconnected. Connect to machine 1 or 2 to start.');
   }
   btnMode.onclick = () => setMode(!proxyMode);
   function loadScript(src) {
