@@ -51,6 +51,7 @@ import urllib.request
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get("PORT", "8080"))
 VNC_HOST, VNC_PORT = "127.0.0.1", 5901
+VNC_PORT2 = 5902  # machine 2
 SJ_HOST, SJ_PORT = "127.0.0.1", int(os.environ.get("SJ_PORT", "18091"))
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PUBLIC_DIR = os.path.join(ROOT, "public")
@@ -249,6 +250,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.relay_websocket_vnc()
             else:
                 self.send_error(400, "WebSocket upgrade required")
+        elif parsed.path == "/websockify2":
+            if self.headers.get("Upgrade", "").lower() == "websocket":
+                self.relay_websocket_vnc(VNC_PORT2)
+            else:
+                self.send_error(400, "WebSocket upgrade required")
         elif parsed.path == "/proxy":
             self.serve_proxy(parsed, "GET")
         elif parsed.path == "/proxy-ws":
@@ -348,11 +354,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return opcode, payload
 
     # -- WebSocket -> VNC relay (VNC mode) ---------------------------------
-    def relay_websocket_vnc(self):
+    def relay_websocket_vnc(self, vnc_port=None):
         if not self.ws_handshake():
             return
         try:
-            vnc = socket.create_connection((VNC_HOST, VNC_PORT), timeout=10)
+            vnc = socket.create_connection((VNC_HOST, vnc_port or VNC_PORT), timeout=10)
         except OSError as e:
             sys.stderr.write("[server] VNC connect failed: %s\n" % e)
             return

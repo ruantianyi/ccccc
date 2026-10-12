@@ -1,23 +1,30 @@
 #!/bin/bash
 # Academic Code Tester - Cloud Chromium via noVNC + private fetch proxy
-# Single-session build (no Replit AI quota needed).
 # Launches Xvfb, fluxbox, x11vnc, Chromium, then server.py which serves
 # ./public, relays WebSocket /websockify to VNC, and provides the private
 # /proxy endpoint (pages fetched server-side, rendered in your own browser).
+#
+# Two independent browser machines:
+#   machine 1: Xvfb :1, x11vnc :5901 (no password), Chromium profile 1
+#   machine 2: Xvfb :2, x11vnc :5902 (password from $MACHINE2_VNC_PASS secret), Chromium profile 2
+# Chromium profiles live INSIDE the workspace so cookies, history, logins and
+# other browsing data survive restarts and VM recycles. Profiles are never wiped.
 #
 # Replit conventions followed:
 # - Reads $PORT (set by Replit); defaults to 8080 for local runs.
 # - Run command is `bash start.sh` (see .replit).
 # - System deps installed via replit.nix (see replit.nix).
+# - Machine 2 VNC password comes from the MACHINE2_VNC_PASS Replit Secret.
 
 set -e
 
-export DISPLAY=:1
 RES="1920x1080x24"
 PORT="${PORT:-8080}"
-VNC_PORT=5901
-PROFILE_DIR="/home/runner/chrome-profile"
-DOWNLOAD_DIR="/home/runner/chrome-downloads"
+VNC_PORT1=5901
+VNC_PORT2=5902
+PROFILE_DIR_1="/home/runner/workspace/.chrome-profile-1"
+PROFILE_DIR_2="/home/runner/workspace/.chrome-profile-2"
+DOWNLOAD_DIR="/home/runner/workspace/chrome-downloads"
 NOVNC_VERSION="1.4.0"
 NOVNC_DIR="./public/novnc"
 
@@ -29,16 +36,12 @@ pkill websockify || true
 pkill chromium || true
 sleep 1
 
-echo "[start] Starting Xvfb on :1 (${RES})..."
+echo "[start] Starting Xvfb on :1 and :2 (${RES})..."
 Xvfb :1 -screen 0 "$RES" &
+Xvfb :2 -screen 0 "$RES" &
 sleep 2
 
 echo "[start] Removing fluxbox decorations for Chromium (exact 1920x1080 fit)..."
-# fluxbox otherwise adds a ~20px titlebar on top of the Chromium window, so the
-# framed window no longer fits the 1920x1080 viewport exactly: the titlebar eats
-# the top of the screen and the window's bottom is pushed offscreen (observed:
-# tabs bar cut off). The apps file is read by fluxbox at startup, so write it
-# before launching fluxbox. The pattern is a regex matched against WM_CLASS.
 mkdir -p ~/.fluxbox
 if ! grep -q "^\[app\] (name=\[Cc\]hrom)" ~/.fluxbox/apps 2>/dev/null; then
   cat >> ~/.fluxbox/apps <<'EOF'
@@ -48,28 +51,33 @@ if ! grep -q "^\[app\] (name=\[Cc\]hrom)" ~/.fluxbox/apps 2>/dev/null; then
 EOF
 fi
 
-echo "[start] Starting fluxbox window manager..."
+echo "[start] Starting fluxbox window managers..."
 DISPLAY=:1 fluxbox &
+DISPLAY=:2 fluxbox &
 sleep 2
 
-echo "[start] Starting x11vnc (localhost only, no password; max frame-rate tuning)..."
-# Max frame-rate tuning (resolution stays 1920x1080): poll the framebuffer
-# every 5ms (default 20), ship updates after 5ms (default 20), and never
-# take long idle naps between polls. Flags verified against x11vnc 0.9.17 manual.
-x11vnc -display :1 -nopw -listen localhost -rfbport "$VNC_PORT" -forever -shared \
+echo "[start] Starting x11vnc for machine 1 (:1 -> 5901, no password; may frame-rate tuning)..."
+x11vnc -display :1 -nopw -listen localhost -rfbport "$VNC_PORT1" -forever -shared \
   -wait 5 -defer 5 -nonap &
+sleep 1
+
+echo "[start] Starting x11vnc for machine 2 (:2 -> 5902, password-protected)..."
+if [ -n "$MACHINE2_VNC_PASS" ]; then
+  x11vnc -display :2 -passwd "$MACHINE2_VNC_PASS" -listen localhost -rfbport "$VNC_PORT2" -forever -shared \
+    -wait 5 -defer 5 -nonap &
+else
+  echo "[start] WARNING: MACHINE2_VNC_PASS is not set; machine 2 VNC will have NO password."
+  x11vnc -display :2 -nopw -listen localhost -rfbport "$VNC_PORT2" -forever -shared \
+    -wait 5 -defer 5 -nonap &
+fi
 sleep 2
 
-echo "[start] Preparing Chromium profile..."
-# Wipe the profile's Default dir each run: a stale Singleton lock or
-# corrupted profile state can leave Chromium running without ever
-# mapping a window (observed: healthy Sl processes, no X window).
-rm -rf "${PROFILE_DIR:?PROFILE_DIR unset}/Default"
-mkdir -p "$PROFILE_DIR/Default" "$DOWNLOAD_DIR"
-# Preseed the download location; Chromium reads this on first run.
-# Files downloaded in the remote browser land here on the server,
-# where they can be retrieved from the Repl's file pane.
-cat > "$PROFILE_DIR/Default/Preferences" <<EOF
+echo "[start] Preparing persistent Chromium profiles (never wiped)..."
+for PDIR in "$PROFILE_DIR_1" "$PROFILE_DIR_2"; do
+  mkdir -p "$PDIR/Default" "$DOWNLOAD_DIR"
+  rm -f "$PDIR/SingletonLock" "$PDIR/SingletonSocket" "$PDIR/SingletonCookie"
+  if [ ! -f "$PDIR/Default/Preferences" ]; then
+    cat > "$PDIR/Default/Preferences" <<EOF
 {
   "download": {
     "default_directory": "$DOWNLOAD_DIR",
@@ -78,8 +86,10 @@ cat > "$PROFILE_DIR/Default/Preferences" <<EOF
   }
 }
 EOF
+  fi
+done
 
-echo "[start] Starting Chromium on :1 (windowed 1920x1080 at 0,0: address bar and tabs visible, exact fit)..."
+echo "[start] Starting Chromium for machine 1 on :1 (windowed 1920x1080 at 0,0)..."
 DISPLAY=:1 chromium \
   --no-sandbox \
   --disable-gpu \
@@ -89,7 +99,19 @@ DISPLAY=:1 chromium \
   --window-size=1920,1080 \
   --window-position=0,0 \
   --force-device-scale-factor=1 \
-  --user-data-dir="$PROFILE_DIR" \
+  --user-data-dir="$PROFILE_DIR_1" \
+  https://www.google.com &
+echo "[start] Starting Chromium for machine 2 on :2 (windowed 1920x1080 at 0,0)..."
+DISPLAY=:2 chromium \
+  --no-sandbox \
+  --disable-gpu \
+  --disable-dev-shm-usage \
+  --no-first-run \
+  --no-default-browser-check \
+  --window-size=1920,1080 \
+  --window-position=0,0 \
+  --force-device-scale-factor=1 \
+  --user-data-dir="$PROFILE_DIR_2" \
   https://www.google.com &
 sleep 3
 
@@ -116,13 +138,12 @@ sleep 2
 kill -0 "$SJ_PID" 2>/dev/null || { echo "[ERROR] sj-server.js exited"; exit 1; }
 
 echo "[start] Launching server.py on port ${PORT} (foreground)..."
-echo "[start] server.py serves ./public, relays /websockify to VNC,"
-echo "[start] exposes the private /proxy endpoint, and reverse-proxies"
-echo "[start] /sj/<token>/* to the Scramjet backend (service-worker mode)."
+echo "[start] server.py serves ./public, relays /websockify to machine 1 VNC,"
+echo "[start] relays /websockify2 to machine 2 VNC, exposes the private /proxy"
+echo "[start] endpoint, and reverse-proxies /sj/<token>/* to the Scramjet backend."
 echo "[start] Open the Replit webview to access the browser."
-echo "[start] WARNING: VNC has no password and the web UI has no sign-in."
-echo "[start] Anyone with the URL can control this session. Keep it private."
+echo "[start] NOTE: machine 1 VNC has no password; machine 2 VNC requires the"
+echo "[start] MACHINE2_VNC_PASS secret. Anyone with the URL can control machine 1."
+echo "[start] Keep it private."
 
-# Run the server in the foreground so the Replit run command stays alive
-# exactly as long as the web server does.
 exec python3 server.py "$PORT"
