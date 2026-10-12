@@ -6,3 +6,5 @@
     pkgs.fluxbox
     pkgs.python3
     pkgs.nodejs
+  ];
+}
