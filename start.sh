@@ -57,17 +57,17 @@ DISPLAY=:2 fluxbox &
 sleep 2
 
 echo "[start] Starting x11vnc for machine 1 (:1 -> 5901, no password; may frame-rate tuning)..."
-x11vnc -display :1 -nopw -listen localhost -rfbport "$VNC_PORT1" -forever -shared \
+x11vnc -display :1 -nopw -listen localhost -rfbport "$VNC_PORT1" -forever -shared -xkb \
   -wait 5 -defer 5 -nonap &
 sleep 1
 
 echo "[start] Starting x11vnc for machine 2 (:2 -> 5902, password-protected)..."
 if [ -n "$MACHINE2_VNC_PASS" ]; then
-  x11vnc -display :2 -passwd "$MACHINE2_VNC_PASS" -listen localhost -rfbport "$VNC_PORT2" -forever -shared \
+  x11vnc -display :2 -passwd "$MACHINE2_VNC_PASS" -listen localhost -rfbport "$VNC_PORT2" -forever -shared -xkb \
     -wait 5 -defer 5 -nonap &
 else
   echo "[start] WARNING: MACHINE2_VNC_PASS is not set; machine 2 VNC will have NO password."
-  x11vnc -display :2 -nopw -listen localhost -rfbport "$VNC_PORT2" -forever -shared \
+  x11vnc -display :2 -nopw -listen localhost -rfbport "$VNC_PORT2" -forever -shared -xkb \
     -wait 5 -defer 5 -nonap &
 fi
 sleep 2
