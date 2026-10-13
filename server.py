@@ -283,7 +283,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/proxy":
             self.serve_proxy(parsed, "POST")
-                else:
+        elif re.match(r"/clipboard/[12]/image$", parsed.path):
+            self.serve_clipboard_post(parsed)
+        else:
             self.send_error(405, "Method not allowed")
 
     def do_OPTIONS(self):
@@ -712,64 +714,102 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 
     # -- Clipboard image sync (VNC mode) --
-        def _clip_display(self, machine):
-                return ":1" if machine == "1" else ":2" if machine == "2" else None
-        def _clip_auth_machine2(self):
-                p = self.headers.get("X-Machine-Password", "")
-                e = os.environ.get("MACHINE2_VNC_PASS", "")
+    def _clip_display(self, machine):
+        return ":1" if machine == "1" else ":2" if machine == "2" else None
+
+    def _clip_auth_machine2(self):
+        p = self.headers.get("X-Machine-Password", "")
+        e = os.environ.get("MACHINE2_VNC_PASS", "")
         return bool(e) and hmac.compare_digest(p, e)
 
     def serve_clipboard(self, parsed):
-                m = re.match(r"/clipboard/([12])/image$", parsed.path)
+        m = re.match(r"/clipboard/([12])/image$", parsed.path)
         if not m:
-            self.send_error(404, "Not found"); return
+            self.send_error(404, "Not found")
             return
-        if m.group(1) == "2" and not self._clip_auth_machine2(): pass
-                        self.send_error(403, "Machine 2 clipboard requires authentication"); return
+        if m.group(1) == "2" and not self._clip_auth_machine2():
+            self.send_error(403, "Machine 2 clipboard requires authentication")
             return
-            return
-            return
-            return
-                    return
         disp = self._clip_display(m.group(1))
+        env = dict(os.environ, DISPLAY=disp)
         try:
+            t = subprocess.run(["xclip", "-selection", "clipboard",
+                                "-t", "TARGETS", "-o"],
+                               capture_output=True, timeout=5, env=env)
+        except (OSError, subprocess.TimeoutExpired):
+            self.send_error(404, "No image in clipboard")
+            return
+        if b"image/png" not in t.stdout:
+            self.send_error(404, "No image in clipboard")
+            return
         try:
-                    try:
-                    try:
-        try:
-        try:
-            env = dict(os.environ, DISPLAY=disp)
-                    t = subprocess.run(["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"], capture_output=True, timeout=5, env=env)
-                if b"image/png" not in t.stdout:
-            self.send_error(404, "No image in clipboard"); return
-        r = subprocess.run(["xclip", "-selection", "clipboard", "-t", "image/png", "-o"], capture_output=True, timeout=10, env=env)
-                data = r.stdout
+            r = subprocess.run(["xclip", "-selection", "clipboard",
+                                "-t", "image/png", "-o"],
+                               capture_output=True, timeout=10, env=env)
+        except (OSError, subprocess.TimeoutExpired):
+            self.send_error(404, "No PNG image in clipboard")
+            return
+        data = r.stdout
         if not data.startswith(b"\x89PNG"):
-            self.send_error(404, "No PNG image in clipboard"); return
+            self.send_error(404, "No PNG image in clipboard")
+            return
         h = hashlib.sha256(data).hexdigest()
-                self.send_response(200)
+        self.send_response(200)
         self.send_header("Content-Type", "image/png")
-                self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", str(len(data)))
         self.send_header("X-Clipboard-Hash", h)
-                self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
 
     def serve_clipboard_post(self, parsed):
-                m = re.match(r"/clipboard/([12])/image$", parsed.path)
+        m = re.match(r"/clipboard/([12])/image$", parsed.path)
         if not m:
-            self.send_error(404, "Not found"); return
-                m = re.match(r"/clipboard/([12])/image$", parsed.path)
-        if not m:
-            self.send_error(404, "Not found"); return
-        if m.group(1) == "2" and not self._clip_auth_machine2(): pass
-            self.send_error(403, "Machine 2 clipboard requires authentication"); return
-                disp = self._clip_display(m.group(1))
+            self.send_error(404, "Not found")
+            return
+        if m.group(1) == "2" and not self._clip_auth_machine2():
+            self.send_error(403, "Machine 2 clipboard requires authentication")
+            return
+        disp = self._clip_display(m.group(1))
         length = int(self.headers.get("Content-Length", 0))
         if length <= 0 or length > 10 * 1024 * 1024:
-            self.send_error(400, "Bad length"); return
-                if m.group(1)=="2" and not self._clip_auth_machine2(): self.send_error(403,"F");return
-                if True: pass
+            self.send_error(400, "Bad length")
+            return
+        data = self.rfile.read(length)
+        if not data.startswith(b"\x89PNG"):
+            self.send_error(400, "Not a PNG image")
+            return
+        # xclip forks to retain X11 clipboard ownership while keeping
+        # captured pipes open, which hangs subprocess.run; write the PNG
+        # to a temp file and detach stdio instead.
+        env = dict(os.environ, DISPLAY=disp)
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        try:
+            tmp.write(data)
+            tmp.close()
+            with open(tmp.name, "rb") as f:
+                subprocess.run(["xclip", "-selection", "clipboard",
+                                "-t", "image/png", "-i"],
+                               stdin=f, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL,
+                               timeout=10, env=env)
+        except (OSError, subprocess.TimeoutExpired):
+            self.send_error(500, "Clipboard write failed")
+            return
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+        h = hashlib.sha256(data).hexdigest()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(h)))
+        self.send_header("X-Clipboard-Hash", h)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(h.encode("ascii"))
+
 def main():
     server = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     server.daemon_threads = True
