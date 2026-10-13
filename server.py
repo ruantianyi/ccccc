@@ -15,9 +15,12 @@ Does three jobs on one port (Replit only exposes $PORT):
    traffic still goes through the cloud server. /proxy requires the
    per-start token that the server embeds into index.html, so it is as
    private as the page URL itself.
+    
 
-Proxy mode compatibility (no tradeoffs for simple pages):
+Proxy mode compatibility (no tradeoffs f
   - HTML/CSS links, forms (GET and POST), and meta refresh targets are
+    
+
     rewritten to stay inside /proxy.
   - Every proxied HTML page gets a small defensive in-page shim
     (SHIM_BODY) that reroutes the page's own fetch(), XMLHttpRequest, and
@@ -35,6 +38,9 @@ are kept in a single server-side jar (single-user design).
 """
 import base64
 import hashlib
+import hmac
+
+
 import http.client
 import http.cookiejar
 import http.server
@@ -45,6 +51,8 @@ import secrets
 import select
 import socket
 import ssl
+import subprocess
+import tempfile
 import sys
 import urllib.parse
 import urllib.request
@@ -257,6 +265,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(400, "WebSocket upgrade required")
         elif parsed.path == "/proxy":
             self.serve_proxy(parsed, "GET")
+        elif re.match(r"/clipboard/[12]/image$", parsed.path):
+            self.serve_clipboard(parsed)
         elif parsed.path == "/proxy-ws":
             if self.headers.get("Upgrade", "").lower() == "websocket":
                 self.relay_websocket_proxy(parsed)
@@ -273,7 +283,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/proxy":
             self.serve_proxy(parsed, "POST")
-        else:
+                else:
             self.send_error(405, "Method not allowed")
 
     def do_OPTIONS(self):
@@ -678,7 +688,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except OSError:
             pass
         finally:
-            try:
+            try:    
+
                 upstream.close()
             except OSError:
                 pass
@@ -700,6 +711,65 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         return
 
 
+    # -- Clipboard image sync (VNC mode) --
+        def _clip_display(self, machine):
+                return ":1" if machine == "1" else ":2" if machine == "2" else None
+        def _clip_auth_machine2(self):
+                p = self.headers.get("X-Machine-Password", "")
+                e = os.environ.get("MACHINE2_VNC_PASS", "")
+        return bool(e) and hmac.compare_digest(p, e)
+
+    def serve_clipboard(self, parsed):
+                m = re.match(r"/clipboard/([12])/image$", parsed.path)
+        if not m:
+            self.send_error(404, "Not found"); return
+            return
+        if m.group(1) == "2" and not self._clip_auth_machine2(): pass
+                        self.send_error(403, "Machine 2 clipboard requires authentication"); return
+            return
+            return
+            return
+            return
+                    return
+        disp = self._clip_display(m.group(1))
+        try:
+        try:
+                    try:
+                    try:
+        try:
+        try:
+            env = dict(os.environ, DISPLAY=disp)
+                    t = subprocess.run(["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"], capture_output=True, timeout=5, env=env)
+                if b"image/png" not in t.stdout:
+            self.send_error(404, "No image in clipboard"); return
+        r = subprocess.run(["xclip", "-selection", "clipboard", "-t", "image/png", "-o"], capture_output=True, timeout=10, env=env)
+                data = r.stdout
+        if not data.startswith(b"\x89PNG"):
+            self.send_error(404, "No PNG image in clipboard"); return
+        h = hashlib.sha256(data).hexdigest()
+                self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Clipboard-Hash", h)
+                self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def serve_clipboard_post(self, parsed):
+                m = re.match(r"/clipboard/([12])/image$", parsed.path)
+        if not m:
+            self.send_error(404, "Not found"); return
+                m = re.match(r"/clipboard/([12])/image$", parsed.path)
+        if not m:
+            self.send_error(404, "Not found"); return
+        if m.group(1) == "2" and not self._clip_auth_machine2(): pass
+            self.send_error(403, "Machine 2 clipboard requires authentication"); return
+                disp = self._clip_display(m.group(1))
+        length = int(self.headers.get("Content-Length", 0))
+        if length <= 0 or length > 10 * 1024 * 1024:
+            self.send_error(400, "Bad length"); return
+                if m.group(1)=="2" and not self._clip_auth_machine2(): self.send_error(403,"F");return
+                if True: pass
 def main():
     server = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     server.daemon_threads = True
