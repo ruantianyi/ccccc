@@ -160,6 +160,8 @@
   const btnRestore = document.getElementById('btn-restore');
   let rfb = null;
   let proxyMode = false;
+  let currentMachine = null;
+  let machinePasswords = {};
   function setStatus(msg) { statusEl.textContent = msg; }
   function connect(machine) {
     if (rfb) { rfb.disconnect(); rfb = null; }
@@ -171,12 +173,22 @@
       const pw = prompt('Enter the password for Machine 2:');
       if (pw === null) { setStatus('Disconnected. Connect to machine 1 or 2 to start.'); return; }
       credentials.password = pw;
+      machinePasswords[2] = pw;
+    } else {
+      machinePasswords[1] = "";
     }
+    currentMachine = machine;
     setStatus('Connecting to machine ' + machine + ' ...');
     try {
       rfb = new RFB(viewportWrap, url, { credentials });
-      rfb.addEventListener('connect', () => setStatus('Connected.'));
-      rfb.addEventListener('disconnect', (e) => setStatus('Disconnected.' + (e.detail.clean ? '' : ' (unclean)')));
+      rfb.addEventListener('connect', () => { setStatus('Connected.'); startClipPoll(); });
+      rfb.addEventListener('disconnect', (e) => { setStatus('Disconnected.' + (e.detail.clean ? '' : ' (unclean)')); stopClipPoll(); currentMachine = null; });
+      rfb.addEventListener('clipboard', (e) => {
+        const t = e.detail && e.detail.text;
+        if (t && navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(t).catch(()=>{});
+        }
+      });
       rfb.addEventListener('credentialsrequired', () => setStatus('Credentials required (server is nopw, check proxy).'));
       rfb.scaleViewport = true;
       rfb.resizeSession = false;
@@ -325,6 +337,77 @@
   };
   proxyView.addEventListener('load', () => {
     if (proxyMode) setStatus('Proxied page loaded (rendered locally).');
+  });
+
+  // -- Clipboard sync (VNC mode) --
+  let clipImgHash = {1: null, 2: null};
+  let clipPollTimer = null;
+  async function sha256hex(buf) {
+    const h = await crypto.subtle.digest('SHA-256', buf);
+    return [...new Uint8Array(h)].map(b=>b.toString(16).padStart(2,'0')).join('');
+  }
+  async function blobToPng(blob) {
+    if (blob.type === 'image/png') return blob;
+    const img = await createImageBitmap(blob);
+    const c = document.createElement('canvas');
+    c.width = img.width; c.height = img.height;
+    c.getContext('2d').drawImage(img, 0, 0);
+    return await new Promise(res=>c.toBlob(res,'image/png'));
+  }
+  function startClipPoll() {
+    stopClipPoll();
+    clipPollTimer = setInterval(async ()=>{
+      try {
+        if (!rfb || !currentMachine) return;
+        if (proxyMode) return;
+        const resp = await fetch(`/clipboard/${currentMachine}/image`, {cache:'no-store', headers:{'X-Machine-Password': (machinePasswords[currentMachine] || "")}});
+        if (!resp.ok) return;
+        const hash = resp.headers.get('X-Clipboard-Hash');
+        if (!hash || hash === clipImgHash[currentMachine]) return;
+        const blob = await resp.blob();
+        if (navigator.clipboard && navigator.clipboard.write) {
+          await navigator.clipboard.write([new ClipboardItem({'image/png': blob})]);
+          clipImgHash[currentMachine] = hash;
+        }
+      } catch(e) {}
+    }, 2000);
+  }
+  function stopClipPoll() {
+    if (clipPollTimer) { clearInterval(clipPollTimer); clipPollTimer = null; }
+  }
+  document.addEventListener('paste', async (e)=>{
+    try {
+      if (!rfb || !currentMachine) return;
+      if (proxyMode) return;
+      const cd = e.clipboardData;
+      if (!cd) return;
+      if (cd.items) {
+        for (const item of cd.items) {
+          if (item.type && item.type.indexOf('image/') === 0) {
+            e.preventDefault();
+            try {
+              const file = item.getAsFile();
+              if (!file) return;
+              const png = await blobToPng(file);
+              const buf = await png.arrayBuffer();
+              const hash = await sha256hex(buf);
+              const resp = await fetch(`/clipboard/${currentMachine}/image`, {
+                method: 'POST',
+                headers: {'Content-Type': 'image/png', 'X-Machine-Password': (machinePasswords[currentMachine] || "")},
+                body: png
+              });
+              if (resp.ok) clipImgHash[currentMachine] = hash;
+            } catch(err) {}
+            return;
+          }
+        }
+      }
+      const text = cd.getData('text/plain');
+      if (text) {
+        e.preventDefault();
+        try { rfb.clipboardPasteFrom(text); } catch(err) {}
+      }
+    } catch(e2) {}
   });
 </script>
 </body>
